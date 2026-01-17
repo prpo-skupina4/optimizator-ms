@@ -2,18 +2,22 @@ from fastapi import APIRouter, HTTPException
 from typing import List, Optional
 from datetime import time
 from fastapi import Request as FastAPIRequest
-
-from app.api.models import Termin, Urnik, OptimizeRequest  # prilagodi, če imaš druga imena
+from app.api.models import Termin, Urnik, OptimizeRequest, VajeZahteva  # prilagodi, če imaš druga imena
 
 
 optimizator = APIRouter()
 
 
 def nujni_termini(urnik: Urnik) -> List[Termin]:
-    termini = []
+    termini: List[Termin] = []
+
     for t in urnik.termini:
-        if (t.tip == "" or t.tip == "P") or (t.aktivnost is not None):
+        tip = (t.tip or "").upper()
+
+        # če NI vaja, je nujno
+        if tip not in ("LV", "AV"):
             termini.append(t)
+
     return termini
 
 
@@ -75,10 +79,26 @@ def zahteveCheck(termini, zahteve) -> bool:
         and pavze(termini, zahteve)
     )
 
+def auto_vaje_zahteve(req: OptimizeRequest) -> List[VajeZahteva]:
+    """
+    Naredi 1 zahtevo na vsak predmet, ki se pojavi v urniku.
+    """
+    seen = set()
+    predmeti = []
+    for t in req.urnik.termini:
+        if t.predmet and t.predmet.predmet_id not in seen:
+            seen.add(t.predmet.predmet_id)
+            predmeti.append(t.predmet)
+
+    return [VajeZahteva(predmet=p, dan=-1, zacetek=None, konec=None) for p in predmeti]
 
 def grupiraj(req: OptimizeRequest):
     kandidati = [t for t in req.termini if (t.tip in ("LV", "AV")) and (t.predmet is not None)]
     skupine = []
+
+    prosti = set(req.zahteve.prosti_dnevi or [])
+    z_glob = req.zahteve.zacetek
+    k_glob = req.zahteve.konec
 
     for v in req.zahteve.vaje:
         predmet_id = v.predmet.predmet_id
@@ -87,7 +107,13 @@ def grupiraj(req: OptimizeRequest):
         for k in kandidati:
             if k.predmet.predmet_id != predmet_id:
                 continue
-            if k.dan != v.dan:
+            if k.dan in prosti:
+                continue
+            if z_glob is not None and minute(k.zacetek) < minute(z_glob):
+                continue
+            if k_glob is not None and (minute(k.zacetek) + k.dolzina) > minute(k_glob):
+                continue
+            if v.dan != -1 and k.dan != v.dan:
                 continue
             if v.zacetek is not None and k.zacetek < v.zacetek:
                 continue
@@ -144,43 +170,74 @@ def dodaj(t: Termin, nujno: List[Termin], izbran: List[Termin]) -> bool:
             return False
     return True
 
+def auto_vaje_zahteve(req: OptimizeRequest) -> List:
+    predmet_ids = []
+    seen = set()
+    for t in req.urnik.termini:
+        if t.predmet and t.predmet.predmet_id not in seen:
+            seen.add(t.predmet.predmet_id)
+            predmet_ids.append(t.predmet)
 
-@optimizator.post("/{uporabnik_id}", response_model=Urnik)
-async def optimizacije(uporabnik_id: int, req: OptimizeRequest, request: FastAPIRequest):
-    # konsistenca user id
+    # naredi eno zahtevo na predmet; dan = -1 pomeni "katerikoli"
+    return [VajeZahteva(predmet=p, dan=-1, zacetek=None, konec=None) for p in predmet_ids]
+
+@optimizator.post("/", response_model=Urnik)
+async def optimizacije(req: OptimizeRequest, request: FastAPIRequest):
+    uporabnik_id = req.uporabnik_id
+
+    # ---------------------------
+    # 0) validacija
+    # ---------------------------
     if req.uporabnik_id != uporabnik_id:
         raise HTTPException(400, detail="uporabnik_id v poti in body se ne ujemata")
 
     zahteve = req.zahteve
+
+  
+    # NUJNI TERMINI
+    
     nujno = nujni_termini(req.urnik)
 
-    # 1) nujni termini se ne smejo križati
+    # 1 nujni termini se ne smejo križati
     for i in range(len(nujno)):
         for j in range(i + 1, len(nujno)):
             if krizanje(nujno[i], nujno[j]):
-                return Urnik(uporabnik_id=req.uporabnik_id, termini=[])
+                return Urnik(uporabnik_id=uporabnik_id, termini=[])
 
-    # 2) nujni termini morajo ustrezati zahtevam
+    # nujni termini morajo ustrezati zahtevam
     if not zahteveCheck(nujno, zahteve):
-        return Urnik(uporabnik_id=req.uporabnik_id, termini=[])
+        return Urnik(uporabnik_id=uporabnik_id, termini=[])
 
-    # 3) če uporabnik sploh ne želi nobenih vaj → vrnemo samo nujne
-    if not (zahteve.vaje and len(zahteve.vaje) > 0):
-        nujno_sorted = sorted(nujno, key=lambda t: (t.dan, minute(t.zacetek)))
-        return Urnik(uporabnik_id=req.uporabnik_id, termini=nujno_sorted)
+    # če ni nobene zahteve → auto za vse predmete
+    if not zahteve.vaje:
+        zahteve.vaje = auto_vaje_zahteve(req)
+    else:
+        # dodaj manjkajoče predmete avtomatsko
+        chosen = {v.predmet.predmet_id for v in zahteve.vaje if v and v.predmet}
+        for v in auto_vaje_zahteve(req):
+            if v.predmet.predmet_id not in chosen:
+                zahteve.vaje.append(v)
 
-    # 4) zgradi skupine kandidatov po zahtevah
+    # varovalka: največ 1 zahteva na predmet
+    dedup = {}
+    for v in zahteve.vaje:
+        pid = v.predmet.predmet_id
+        if pid not in dedup:
+            dedup[pid] = v
+    zahteve.vaje = list(dedup.values())
+
+    #zgradi skupine kandidatov
+  
     skupine = grupiraj(req)
     if any(len(s) == 0 for s in skupine):
-        return Urnik(uporabnik_id=req.uporabnik_id, termini=[])
+        return Urnik(uporabnik_id=uporabnik_id, termini=[])
 
     izbran: List[Termin] = []
 
-    # KLJUČNI FIX: naj_urnik mora biti None, ne []
     naj_urnik: Optional[List[Termin]] = None
     naj_vrednost = 10**18
 
-    # najmanjše skupine najprej
+    # najmanjše skupine najprej 
     uredi = sorted(range(len(skupine)), key=lambda idx: len(skupine[idx]))
     skupine = [skupine[i] for i in uredi]
 
@@ -197,12 +254,11 @@ async def optimizacije(uporabnik_id: int, req: OptimizeRequest, request: FastAPI
                     naj_vrednost = s
                     naj_urnik = izbran[:]
             else:
-                # prva najdena rešitev je dovolj
                 naj_urnik = izbran[:]
             return
 
-        # če ne optimiziraš pavz, in rešitev že obstaja, končaj
-        if (naj_urnik is not None) and (not zahteve.min_pavze):
+        # če ne optimiziraš pavz, in rešitev že obstaja → končaj
+        if naj_urnik is not None and not zahteve.min_pavze:
             return
 
         skupina = skupine[i]
@@ -219,7 +275,7 @@ async def optimizacije(uporabnik_id: int, req: OptimizeRequest, request: FastAPI
             izbran.append(t)
 
             if zahteveCheck(nujno + izbran, zahteve):
-                if zahteve.min_pavze and (naj_urnik is not None):
+                if zahteve.min_pavze and naj_urnik is not None:
                     cur = _total_gaps_minutes(nujno + izbran)
                     if cur <= naj_vrednost:
                         dfs(i + 1)
@@ -231,11 +287,11 @@ async def optimizacije(uporabnik_id: int, req: OptimizeRequest, request: FastAPI
     dfs(0)
 
     if naj_urnik is None:
-        return Urnik(uporabnik_id=req.uporabnik_id, termini=[])
+        return Urnik(uporabnik_id=uporabnik_id, termini=[])
 
-    # vrni skupaj: nujni + izbrane vaje
     rezultat = sorted(nujno + naj_urnik, key=lambda t: (t.dan, minute(t.zacetek)))
-    return Urnik(uporabnik_id=req.uporabnik_id, termini=rezultat)
+    return Urnik(uporabnik_id=uporabnik_id, termini=rezultat)
+
 
 
 @optimizator.get("/health")
