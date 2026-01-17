@@ -64,7 +64,7 @@ async def test_picks_one_exercise_per_subject_when_possible(app):
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        r = await ac.post("/optimizacije/1", json=req)
+        r = await ac.post("/optimizacije/", json=req)
 
     print(r.status_code, r.json())
 
@@ -105,7 +105,7 @@ async def test_min_pavze_prefers_smaller_gaps(app):
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        r = await ac.post(f"/optimizacije/{uid}", json=req)
+        r = await ac.post("/optimizacije/", json=req)
 
     assert r.status_code == 200
     termini = r.json()["termini"]

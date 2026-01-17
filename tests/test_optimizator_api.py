@@ -71,8 +71,7 @@ async def test_returns_empty_if_mandatory_terms_overlap(app):
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        # KLJUČNO: path id mora biti isti kot body id, sicer dobiš 400
-        r = await ac.post(f"/optimizacije/{uid}", json=req)
+        r = await ac.post("/optimizacije/", json=req)
 
     assert r.status_code == 200
     data = r.json()
@@ -94,7 +93,7 @@ async def test_respects_prosti_dnevi(app):
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        r = await ac.post(f"/optimizacije/{uid}", json=req)
+        r = await ac.post("/optimizacije/", json=req)
 
     assert r.status_code == 200
     assert r.json()["termini"] == []
@@ -114,7 +113,7 @@ async def test_respects_start_end_time_window(app):
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        r = await ac.post(f"/optimizacije/{uid}", json=req)
+        r = await ac.post("/optimizacije/", json=req)
 
     assert r.status_code == 200
     assert r.json()["termini"] == []
@@ -141,7 +140,7 @@ async def test_respects_pavza_block(app):
     }
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        r = await ac.post(f"/optimizacije/{uid}", json=req)
+        r = await ac.post("/optimizacije/", json=req)
 
     assert r.status_code == 200
     assert r.json()["termini"] == []
