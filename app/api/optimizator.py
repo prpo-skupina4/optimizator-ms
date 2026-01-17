@@ -182,7 +182,7 @@ def auto_vaje_zahteve(req: OptimizeRequest) -> List:
     return [VajeZahteva(predmet=p, dan=-1, zacetek=None, konec=None) for p in predmet_ids]
 
 @optimizator.post("/", response_model=Urnik)
-async def optimizacije(req: OptimizeRequest, request: FastAPIRequest):
+def optimizacije(req: OptimizeRequest, request: FastAPIRequest):
     uporabnik_id = req.uporabnik_id
 
     # ---------------------------
