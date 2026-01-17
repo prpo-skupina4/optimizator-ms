@@ -7,14 +7,14 @@ class Predmet(BaseModel):
     predmet_id: int
     oznaka: str
     ime: str
-
+    
 class Aktivnost(BaseModel):
     aktivnost_id: Optional[int] = None
     oznaka: str
     ime:str
 
 class Termin(BaseModel):
-    termin_id: int
+    termin_id: Optional[int] = None
     zacetek: time
     dolzina: int
     dan:int
@@ -22,7 +22,6 @@ class Termin(BaseModel):
     tip:str
     predmet: Optional[Predmet] = None
     aktivnost: Optional[Aktivnost] = None
-   
 
 
 class Urnik(BaseModel):
